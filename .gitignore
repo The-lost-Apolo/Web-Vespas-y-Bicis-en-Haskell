@@ -1,0 +1,17 @@
+# Haskell / Stack build
+.stack-work/
+dist/
+dist-newstyle/
+*.hi
+*.o
+
+# Cabal / Stack
+cabal.sandbox.config
+cabal.config
+stack.yaml.lock
+
+# IDEs / macOS / temporales
+.idea/
+.vscode/
+.DS_Store
+*.swp
