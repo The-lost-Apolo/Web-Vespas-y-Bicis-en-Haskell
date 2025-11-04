@@ -4,6 +4,7 @@ import Network.Wai
 import Network.Wai.Handler.Warp (run)
 import Network.HTTP.Types (status200, status302)
 import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Lazy.Char8 as BL
 import Network.Wai.Parse (parseRequestBody, lbsBackEnd)
 import Control.Concurrent.MVar
 import Data.List (find)
@@ -14,81 +15,178 @@ import Data.Char (isDigit)
 
 import Pages
 import Models
+import Users
 
 main :: IO ()
 main = do
-  db <- newMVar []
+  vehiculosDB <- newMVar []
+  usuariosDB <- newMVar [Usuario 1 "Admin" "admin@example.com" "admin" Admin]
+  usuarioActual <- newMVar Nothing
   putStrLn "Servidor iniciado en http://localhost:8080"
-  run 8080 (app db)
+  run 8080 (app vehiculosDB usuariosDB usuarioActual)
 
-app :: MVar [Vehiculo] -> Application
-app db req respond = do
-  vehiculos <- readMVar db
+app :: MVar [Vehiculo] -> MVar [Usuario] -> MVar (Maybe Usuario) -> Application
+app vehiculosDB usuariosDB usuarioActual req respond = do
+  vehiculos <- readMVar vehiculosDB
+  usuarios <- readMVar usuariosDB
+  currentUser <- readMVar usuarioActual
   let path = rawPathInfo req
+
   case (requestMethod req, path) of
 
-    -- Página de inicio
-    ("GET", "/") ->
+    -----------------------------------------
+    -- 🏠 Página de inicio
+    -----------------------------------------
+    ("GET", "/") -> do
+      let header = case currentUser of
+            Just u -> "<p>Bienvenido, <b>" <> nombre u <> "</b> 👋 — \
+                      \<a href='/logout' style='color:lightgreen'>Cerrar sesión</a></p>"
+            Nothing -> "<p><a href='/login'>Iniciar sesión</a> | <a href='/registro'>Crear cuenta</a></p>"
       respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
-        "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Inicio</title>\
+        BL.pack $ "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Inicio</title>\
         \<style>body{background:#111;color:white;font-family:sans-serif;}a{color:lightgreen;}</style>\
-        \</head><body><h1>Bienvenido a Mi Garaje Vespa 🚗</h1>\
-        \<a href='/garaje'>Entrar al garaje</a></body></html>"
+        \</head><body><h1>🚗 Bienvenido a Mi Garaje Vespa</h1>" <>
+        header <>
+        "<a href='/garaje'>Entrar al garaje</a></body></html>"
 
-    -- Página del garaje (listado)
+    -----------------------------------------
+    -- 🔐 LOGIN
+    -----------------------------------------
+    ("GET", "/login") ->
+      respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
+        "<html><head><meta charset='UTF-8'><title>Login</title></head><body>\
+        \<h1>Iniciar sesión</h1>\
+        \<form method='post' action='/login'>\
+        \Email: <input name='email'><br>\
+        \Contraseña: <input type='password' name='password'><br>\
+        \<input type='submit' value='Entrar'>\
+        \</form>\
+        \<p><a href='/'>Volver al inicio</a></p>\
+        \</body></html>"
+
+    ("POST", "/login") -> do
+      (params, _) <- parseRequestBody lbsBackEnd req
+      let lookupField key = maybe "" BS.unpack (lookup key params)
+          email = lookupField "email"
+          pwd = lookupField "password"
+      case find (\u -> email == Users.email u && pwd == password u) usuarios of
+        Just u -> do
+          swapMVar usuarioActual (Just u)
+          respond $ responseLBS status302 [("Location", "/garaje")] ""
+        Nothing ->
+          respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
+            "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Error de login</title>\
+            \<style>body{background:#111;color:white;font-family:sans-serif;text-align:center;}\
+            \a{color:lightgreen;text-decoration:none;margin:10px;display:inline-block;}</style>\
+            \</head><body>\
+            \<h1>⚠️ Usuario o contraseña incorrectos</h1>\
+            \<p>El usuario no existe o la contraseña es incorrecta.</p>\
+            \<p>\
+            \<a href='/registro'>📝 Crear cuenta</a>\
+            \<a href='/'>🏠 Volver al inicio</a>\
+            \</p>\
+            \</body></html>"
+
+
+    -----------------------------------------
+    -- 🔒 LOGOUT
+    -----------------------------------------
+    ("GET", "/logout") -> do
+      swapMVar usuarioActual Nothing
+      respond $ responseLBS status302 [("Location", "/")] ""
+
+    -----------------------------------------
+    -- 🧾 REGISTRO
+    -----------------------------------------
+    ("GET", "/registro") ->
+      respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
+        "<html><head><meta charset='UTF-8'><title>Registro</title></head><body>\
+        \<h1>Crear usuario</h1>\
+        \<form method='post' action='/registro'>\
+        \Nombre: <input name='nombre'><br>\
+        \Email: <input name='email'><br>\
+        \Contraseña: <input type='password' name='password'><br>\
+        \<input type='submit' value='Registrar'>\
+        \</form>\
+        \<p><a href='/'>Volver al inicio</a></p>\
+        \</body></html>"
+
+    ("POST", "/registro") -> do
+      (params, _) <- parseRequestBody lbsBackEnd req
+      let lookupField key = maybe "" BS.unpack (lookup key params)
+      modifyMVar_ usuariosDB $ \us -> do
+        let nuevo = Usuario (length us + 1) (lookupField "nombre") (lookupField "email") (lookupField "password") User
+        return (us ++ [nuevo])
+      respond $ responseLBS status302 [("Location", "/login")] ""
+
+    -----------------------------------------
+    -- 🚗 GARAGE (protección)
+    -----------------------------------------
     ("GET", "/garaje") ->
-      respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (paginaLista vehiculos))
+      case currentUser of
+        Nothing -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
+          "<html><head><meta charset='UTF-8'><title>Acceso restringido</title></head><body>\
+          \<h1>🔒 Debes iniciar sesión para acceder al garaje</h1>\
+          \<p><a href='/login'>Iniciar sesión</a> | <a href='/registro'>Registrarme</a></p>\
+          \<p><a href='/'>Volver al inicio</a></p>\
+          \</body></html>"
+        Just u -> do
+          let propios = filter (\v -> vehiculoOwnerId v == userId u) vehiculos
+          respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (paginaLista propios))
 
-    -- Formulario: nuevo
+    -----------------------------------------
+    -- 🚘 NUEVO VEHÍCULO
+    -----------------------------------------
     ("GET", "/garaje/nuevo") ->
       respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (formVehiculo "/garaje/nuevo" Nothing))
 
-    -- Crear vehículo (POST)
-    ("POST", "/garaje/nuevo") -> do
-      (params, _) <- parseRequestBody lbsBackEnd req
-      let lookupField key = maybe "" BS.unpack (lookup key params)
-          nuevo = Vehiculo
-            { vehiculoId = nextId vehiculos
-            , tipo = lookupField "tipo"
-            , marca = lookupField "marca"
-            , modelo = lookupField "modelo"
-            , anio = readDef 2025 (lookupField "anio")
-            , color = lookupField "color"
-            , kilometros = readDef 0 (lookupField "km")
-            , ultimaRevision = fromGregorian 2025 1 1
-            , itvFecha = Nothing
-            , foto = Nothing
-            , notas = lookupField "notas"
-            }
-      modifyMVar_ db (return . (++ [nuevo]))
-      respond $ responseLBS status302 [("Location", "/garaje")] ""
-
-    -- Borrar vehículo
-    ("GET", p) | "/garaje/borrar/" `BS.isPrefixOf` p ->
-      case takeIdAfter "/garaje/borrar/" p of
-        Just vid -> do
-          modifyMVar_ db (return . filter ((/= vid) . vehiculoId))
-          respond $ responseLBS status302 [("Location", "/garaje")] ""
-        Nothing ->
-          respond $ responseLBS status302 [("Location", "/garaje")] ""
-
-    -- Formulario editar
-    ("GET", p) | "/garaje/" `BS.isPrefixOf` p && "/editar" `BS.isSuffixOf` p ->
-      case takeIdAfter "/garaje/" p of
-        Just vid ->
-          case find ((== vid) . vehiculoId) vehiculos of
-            Just v  -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")]
-                                    (renderBS (formVehiculo ("/garaje/" ++ show vid ++ "/actualizar") (Just v)))
-            Nothing -> respond $ responseLBS status302 [("Location", "/garaje")] ""
-        Nothing -> respond $ responseLBS status302 [("Location", "/garaje")] ""
-
-    -- Actualizar vehículo
-    ("POST", p) | "/garaje/" `BS.isPrefixOf` p && "/actualizar" `BS.isSuffixOf` p ->
-      case takeIdAfter "/garaje/" p of
-        Just vid -> do
+    ("POST", "/garaje/nuevo") ->
+      case currentUser of
+        Nothing -> respond $ responseLBS status302 [("Location", "/login")] ""
+        Just u -> do
           (params, _) <- parseRequestBody lbsBackEnd req
           let lookupField key = maybe "" BS.unpack (lookup key params)
-          modifyMVar_ db $ \vs -> do
+              nuevo = Vehiculo
+                { vehiculoId = nextId vehiculos
+                , vehiculoOwnerId = userId u
+                , tipo = lookupField "tipo"
+                , marca = lookupField "marca"
+                , modelo = lookupField "modelo"
+                , anio = readDef 2025 (lookupField "anio")
+                , color = lookupField "color"
+                , kilometros = readDef 0 (lookupField "km")
+                , ultimaRevision = fromGregorian 2025 1 1
+                , itvFecha = Nothing
+                , foto = Nothing
+                , notas = lookupField "notas"
+                }
+          modifyMVar_ vehiculosDB (return . (++ [nuevo]))
+          respond $ responseLBS status302 [("Location", "/garaje")] ""
+
+    -----------------------------------------
+    -- ✏️ EDITAR VEHÍCULO
+    -----------------------------------------
+    ("GET", p) | "/garaje/" `BS.isPrefixOf` p && "/editar" `BS.isSuffixOf` p ->
+      case (currentUser, takeIdAfter "/garaje/" p) of
+        (Just u, Just vid) ->
+          case find (\v -> vehiculoId v == vid && vehiculoOwnerId v == userId u) vehiculos of
+            Just v ->
+              respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")]
+                (renderBS (formVehiculo ("/garaje/" ++ show vid ++ "/actualizar") (Just v)))
+            Nothing ->
+              respond $ responseLBS status302 [("Location", "/garaje")] ""
+        _ ->
+          respond $ responseLBS status302 [("Location", "/login")] ""
+
+    -----------------------------------------
+    -- 💾 ACTUALIZAR VEHÍCULO
+    -----------------------------------------
+    ("POST", p) | "/garaje/" `BS.isPrefixOf` p && "/actualizar" `BS.isSuffixOf` p ->
+      case (currentUser, takeIdAfter "/garaje/" p) of
+        (Just u, Just vid) -> do
+          (params, _) <- parseRequestBody lbsBackEnd req
+          let lookupField key = maybe "" BS.unpack (lookup key params)
+          modifyMVar_ vehiculosDB $ \vs -> do
             let actualizar v = v
                   { tipo        = lookupField "tipo"
                   , marca       = lookupField "marca"
@@ -98,12 +196,24 @@ app db req respond = do
                   , kilometros  = readDef 0 (lookupField "km")
                   , notas       = lookupField "notas"
                   }
-            return (map (\v -> if vehiculoId v == vid then actualizar v else v) vs)
+            return (map (\v -> if vehiculoId v == vid && vehiculoOwnerId v == userId u
+                               then actualizar v else v) vs)
           respond $ responseLBS status302 [("Location", "/garaje")] ""
-        Nothing ->
-          respond $ responseLBS status302 [("Location", "/garaje")] ""
+        _ -> respond $ responseLBS status302 [("Location", "/login")] ""
 
-    -- Ver vehículo
+    -----------------------------------------
+    -- 🗑️ BORRAR VEHÍCULO
+    -----------------------------------------
+    ("GET", p) | "/garaje/borrar/" `BS.isPrefixOf` p ->
+      case (currentUser, takeIdAfter "/garaje/borrar/" p) of
+        (Just u, Just vid) -> do
+          modifyMVar_ vehiculosDB (return . filter (\v -> vehiculoId v /= vid || vehiculoOwnerId v /= userId u))
+          respond $ responseLBS status302 [("Location", "/garaje")] ""
+        _ -> respond $ responseLBS status302 [("Location", "/login")] ""
+
+    -----------------------------------------
+    -- 👁️ VER VEHÍCULO
+    -----------------------------------------
     ("GET", p) | "/garaje/" `BS.isPrefixOf` p ->
       case takeIdAfter "/garaje/" p of
         Just vid ->
@@ -112,22 +222,22 @@ app db req respond = do
             Nothing -> respond $ responseLBS status302 [("Location", "/garaje")] ""
         Nothing -> respond $ responseLBS status302 [("Location", "/garaje")] ""
 
-    -- Archivos estáticos
-    _ | "/static/" `BS.isPrefixOf` path -> do
-          let file = drop 8 (BS.unpack path)
-          respond $ responseFile status200 [("Content-Type", "application/javascript")] ("static/" ++ file) Nothing
-
-    -- Fallback
+    -----------------------------------------
+    -- ❌ RUTA INVÁLIDA
+    -----------------------------------------
     _ -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] "Ruta no válida"
 
--- Helper: leer ID después de un prefijo
+
+--------------------------------------------------------
+-- 🔧 Helpers
+--------------------------------------------------------
+
 takeIdAfter :: String -> BS.ByteString -> Maybe Int
 takeIdAfter prefix p =
   let rest = drop (length prefix) (BS.unpack p)
       digits = takeWhile isDigit rest
   in if null digits then Nothing else readMaybe digits
 
--- Conversión segura de texto a número
 readDef :: Read a => a -> String -> a
 readDef def s = case reads s of
   [(x, "")] -> x

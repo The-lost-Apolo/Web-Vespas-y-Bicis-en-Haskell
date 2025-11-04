@@ -69,6 +69,13 @@ formVehiculo actionPath maybeV = html_ $ do
       p_ $ do "Notas: " >> textarea_ [name_ "notas"] (toHtml (maybe "" notas maybeV))
       p_ $ input_ [type_ "submit", value_ "Guardar"]
 
+      -- 🆕 Botón para volver al vehículo o al garaje
+      p_ $ do
+        let volverLink = case maybeV of
+              Just v  -> "/garaje/" <> show (vehiculoId v)
+              Nothing -> "/garaje"
+        a_ [href_ (T.pack volverLink)] "⬅️ Volver al vehículo"
+
 -- Cubo 3D de prueba
 escena3D :: String
 escena3D = unlines

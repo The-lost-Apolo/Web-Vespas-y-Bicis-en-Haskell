@@ -7,18 +7,20 @@ import Data.Aeson (ToJSON, FromJSON)
 import Data.Time (Day, fromGregorian)
 
 data Vehiculo = Vehiculo
-  { vehiculoId       :: Int
-  , tipo             :: String
-  , marca            :: String
-  , modelo           :: String
-  , anio             :: Int
-  , color            :: String
-  , kilometros       :: Int
-  , ultimaRevision   :: Day
-  , itvFecha         :: Maybe Day
-  , foto             :: Maybe FilePath
-  , notas            :: String
+  { vehiculoId :: Int
+  , vehiculoOwnerId :: Int
+  , tipo :: String
+  , marca :: String
+  , modelo :: String
+  , anio :: Int
+  , color :: String
+  , kilometros :: Int
+  , ultimaRevision :: Day
+  , itvFecha :: Maybe Day
+  , foto :: Maybe String
+  , notas :: String
   } deriving (Show, Eq, Generic)
+
 
 instance ToJSON Vehiculo
 instance FromJSON Vehiculo
