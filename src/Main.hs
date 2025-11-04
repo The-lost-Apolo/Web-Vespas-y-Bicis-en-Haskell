@@ -6,36 +6,61 @@ import Network.HTTP.Types (status200, status302)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Network.Wai.Parse (parseRequestBody, lbsBackEnd)
-import Control.Concurrent.MVar
 import Data.List (find)
 import Data.Time (fromGregorian)
 import Lucid (renderBS)
 import Text.Read (readMaybe)
 import Data.Char (isDigit)
+import Control.Concurrent.MVar
+import Control.Monad (void)
+import Database.SQLite.Simple (Connection)
 
 import Pages
 import Models
 import Users
+import Database
+
+--------------------------------------------------------
+-- 🔧 Helpers
+--------------------------------------------------------
+
+takeIdAfter :: String -> BS.ByteString -> Maybe Int
+takeIdAfter prefix p =
+  let rest = drop (length prefix) (BS.unpack p)
+      digits = takeWhile isDigit rest
+  in if null digits then Nothing else readMaybe digits
+
+readDef :: Read a => a -> String -> a
+readDef def s = case reads s of
+  [(x, "")] -> x
+  _         -> def
+
+--------------------------------------------------------
+-- 🚀 Main
+--------------------------------------------------------
 
 main :: IO ()
 main = do
-  vehiculosDB <- newMVar []
-  usuariosDB <- newMVar [Usuario 1 "Admin" "admin@example.com" "admin" Admin]
+  conn <- initDatabase
   usuarioActual <- newMVar Nothing
-  putStrLn "Servidor iniciado en http://localhost:8080"
-  run 8080 (app vehiculosDB usuariosDB usuarioActual)
+  putStrLn "✅ Servidor iniciado en http://localhost:8080"
+  run 8080 (app conn usuarioActual)
 
-app :: MVar [Vehiculo] -> MVar [Usuario] -> MVar (Maybe Usuario) -> Application
-app vehiculosDB usuariosDB usuarioActual req respond = do
-  vehiculos <- readMVar vehiculosDB
-  usuarios <- readMVar usuariosDB
+--------------------------------------------------------
+-- 🌐 Aplicación principal
+--------------------------------------------------------
+
+app :: Connection -> MVar (Maybe Usuario) -> Application
+app conn usuarioActual req respond = do
+  usuarios  <- loadUsuarios conn
+  vehiculos <- loadVehiculos conn
   currentUser <- readMVar usuarioActual
   let path = rawPathInfo req
 
   case (requestMethod req, path) of
 
     -----------------------------------------
-    -- 🏠 Página de inicio
+    -- 🏠 INICIO
     -----------------------------------------
     ("GET", "/") -> do
       let header = case currentUser of
@@ -69,26 +94,20 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
 
     ("POST", "/login") -> do
       (params, _) <- parseRequestBody lbsBackEnd req
-      let lookupField key = maybe "" BS.unpack (lookup key params)
+      let lookupField k = maybe "" BS.unpack (lookup k params)
           email = lookupField "email"
-          pwd = lookupField "password"
+          pwd   = lookupField "password"
       case find (\u -> email == Users.email u && pwd == password u) usuarios of
         Just u -> do
           swapMVar usuarioActual (Just u)
           respond $ responseLBS status302 [("Location", "/garaje")] ""
-        Nothing ->
-          respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
-            "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Error de login</title>\
-            \<style>body{background:#111;color:white;font-family:sans-serif;text-align:center;}\
-            \a{color:lightgreen;text-decoration:none;margin:10px;display:inline-block;}</style>\
-            \</head><body>\
-            \<h1>⚠️ Usuario o contraseña incorrectos</h1>\
-            \<p>El usuario no existe o la contraseña es incorrecta.</p>\
-            \<p>\
-            \<a href='/registro'>📝 Crear cuenta</a>\
-            \<a href='/'>🏠 Volver al inicio</a>\
-            \</p>\
-            \</body></html>"
+        Nothing -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
+          "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Error de login</title>\
+          \<style>body{background:#111;color:white;font-family:sans-serif;text-align:center;}a{color:lightgreen;text-decoration:none;margin:10px;display:inline-block;}</style>\
+          \</head><body><h1>⚠️ Usuario o contraseña incorrectos</h1>\
+          \<p>El usuario no existe o la contraseña es incorrecta.</p>\
+          \<p><a href='/registro'>📝 Crear cuenta</a> <a href='/'>🏠 Volver al inicio</a></p>\
+          \</body></html>"
 
     -----------------------------------------
     -- 🔒 LOGOUT
@@ -115,21 +134,20 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
 
     ("POST", "/registro") -> do
       (params, _) <- parseRequestBody lbsBackEnd req
-      let lookupField key = maybe "" BS.unpack (lookup key params)
-      modifyMVar_ usuariosDB $ \us -> do
-        let nuevo = Usuario (length us + 1) (lookupField "nombre") (lookupField "email") (lookupField "password") User
-        return (us ++ [nuevo])
+      let lookupField k = maybe "" BS.unpack (lookup k params)
+      executeInsertUser conn (lookupField "nombre") (lookupField "email") (lookupField "password")
       respond $ responseLBS status302 [("Location", "/login")] ""
 
     -----------------------------------------
-    -- 👑 PANEL DE ADMINISTRACIÓN
+    -- 👑 ADMINISTRACIÓN
     -----------------------------------------
     ("GET", "/admin") ->
       case currentUser of
-        Just u | rol u == Admin -> do
+        Just u | rol u == Admin ->
           respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (paginaAdmin usuarios))
-        _ -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
-          "<html><body><h1>🚫 Acceso denegado</h1><p>Solo el administrador puede ver esta página.</p><a href='/'>Volver al inicio</a></body></html>"
+        _ ->
+          respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")]
+            "<html><body><h1>🚫 Acceso denegado</h1><a href='/'>Volver al inicio</a></body></html>"
 
     ("GET", "/admin/nuevo") ->
       case currentUser of
@@ -141,11 +159,12 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
       case currentUser of
         Just u | rol u == Admin -> do
           (params, _) <- parseRequestBody lbsBackEnd req
-          let lookupField key = maybe "" BS.unpack (lookup key params)
+          let lookupField k = maybe "" BS.unpack (lookup k params)
               rolStr = lookupField "rol"
               nuevoRol = if rolStr == "Admin" then Admin else User
-              nuevo = Usuario (length usuarios + 1) (lookupField "nombre") (lookupField "email") (lookupField "password") nuevoRol
-          modifyMVar_ usuariosDB (return . (++ [nuevo]))
+          us <- loadUsuarios conn
+          let nuevo = Usuario (length us + 1) (lookupField "nombre") (lookupField "email") (lookupField "password") nuevoRol
+          saveUsuarios conn (us ++ [nuevo])
           respond $ responseLBS status302 [("Location", "/admin")] ""
         _ -> respond $ responseLBS status302 [("Location", "/")] ""
 
@@ -153,7 +172,9 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
       case (currentUser, takeIdAfter "/admin/editar/" p) of
         (Just u, Just uid) | rol u == Admin ->
           case find ((== uid) . userId) usuarios of
-            Just usr -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (formUsuario ("/admin/actualizar/" ++ show uid) (Just usr)))
+            Just usr ->
+              respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")]
+                (renderBS (formUsuario ("/admin/actualizar/" ++ show uid) (Just usr)))
             Nothing -> respond $ responseLBS status302 [("Location", "/admin")] ""
         _ -> respond $ responseLBS status302 [("Location", "/")] ""
 
@@ -161,44 +182,38 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
       case (currentUser, takeIdAfter "/admin/actualizar/" p) of
         (Just u, Just uid) | rol u == Admin -> do
           (params, _) <- parseRequestBody lbsBackEnd req
-          let lookupField key = maybe "" BS.unpack (lookup key params)
+          let lookupField k = maybe "" BS.unpack (lookup k params)
               rolStr = lookupField "rol"
               nuevoRol = if rolStr == "Admin" then Admin else User
-          modifyMVar_ usuariosDB $ \us ->
-            return (map (\usr -> if userId usr == uid
-                                 then usr { nombre = lookupField "nombre"
-                                          , email = lookupField "email"
-                                          , password = lookupField "password"
-                                          , rol = nuevoRol }
-                                 else usr) us)
+          us <- loadUsuarios conn
+          saveUsuarios conn $
+            map (\usr -> if userId usr == uid
+                         then usr { nombre = lookupField "nombre"
+                                  , email = lookupField "email"
+                                  , password = lookupField "password"
+                                  , rol = nuevoRol }
+                         else usr) us
           respond $ responseLBS status302 [("Location", "/admin")] ""
         _ -> respond $ responseLBS status302 [("Location", "/")] ""
 
     ("GET", p) | "/admin/borrar/" `BS.isPrefixOf` p ->
       case (currentUser, takeIdAfter "/admin/borrar/" p) of
         (Just u, Just uid) | rol u == Admin -> do
-          modifyMVar_ usuariosDB (return . filter ((/= uid) . userId))
+          us <- loadUsuarios conn
+          saveUsuarios conn (filter ((/= uid) . userId) us)
           respond $ responseLBS status302 [("Location", "/admin")] ""
         _ -> respond $ responseLBS status302 [("Location", "/")] ""
 
     -----------------------------------------
-    -- 🚗 GARAGE (protegido)
+    -- 🚗 GARAGE
     -----------------------------------------
     ("GET", "/garaje") ->
       case currentUser of
-        Nothing -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
-          "<html><head><meta charset='UTF-8'><title>Acceso restringido</title></head><body>\
-          \<h1>🔒 Debes iniciar sesión para acceder al garaje</h1>\
-          \<p><a href='/login'>Iniciar sesión</a> | <a href='/registro'>Registrarme</a></p>\
-          \<p><a href='/'>Volver al inicio</a></p>\
-          \</body></html>"
+        Nothing -> respond $ responseLBS status302 [("Location", "/login")] ""
         Just u -> do
           let propios = filter (\v -> vehiculoOwnerId v == userId u) vehiculos
           respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (paginaLista propios))
 
-    -----------------------------------------
-    -- 🚘 NUEVO VEHÍCULO
-    -----------------------------------------
     ("GET", "/garaje/nuevo") ->
       respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (formVehiculo "/garaje/nuevo" Nothing))
 
@@ -207,75 +222,61 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
         Nothing -> respond $ responseLBS status302 [("Location", "/login")] ""
         Just u -> do
           (params, _) <- parseRequestBody lbsBackEnd req
-          let lookupField key = maybe "" BS.unpack (lookup key params)
-              nuevo = Vehiculo
-                { vehiculoId = nextId vehiculos
-                , vehiculoOwnerId = userId u
-                , tipo = lookupField "tipo"
-                , marca = lookupField "marca"
-                , modelo = lookupField "modelo"
-                , anio = readDef 2025 (lookupField "anio")
-                , color = lookupField "color"
-                , kilometros = readDef 0 (lookupField "km")
-                , ultimaRevision = fromGregorian 2025 1 1
-                , itvFecha = Nothing
-                , foto = Nothing
-                , notas = lookupField "notas"
+          let lookupField k = maybe "" BS.unpack (lookup k params)
+          vs <- loadVehiculos conn
+          let nuevo = Vehiculo
+                { vehiculoId        = nextId vs
+                , vehiculoOwnerId   = userId u
+                , tipo              = lookupField "tipo"
+                , marca             = lookupField "marca"
+                , modelo            = lookupField "modelo"
+                , anio              = readDef 2025 (lookupField "anio")
+                , color             = lookupField "color"
+                , kilometros        = readDef 0 (lookupField "km")
+                , ultimaRevision    = fromGregorian 2025 1 1
+                , itvFecha          = Nothing
+                , foto              = Nothing
+                , notas             = lookupField "notas"
                 }
-          modifyMVar_ vehiculosDB (return . (++ [nuevo]))
+          saveVehiculos conn (vs ++ [nuevo])
           respond $ responseLBS status302 [("Location", "/garaje")] ""
 
-    -----------------------------------------
-    -- ✏️ EDITAR VEHÍCULO
-    -----------------------------------------
     ("GET", p) | "/garaje/" `BS.isPrefixOf` p && "/editar" `BS.isSuffixOf` p ->
       case (currentUser, takeIdAfter "/garaje/" p) of
         (Just u, Just vid) ->
           case find (\v -> vehiculoId v == vid && vehiculoOwnerId v == userId u) vehiculos of
-            Just v ->
-              respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")]
-                (renderBS (formVehiculo ("/garaje/" ++ show vid ++ "/actualizar") (Just v)))
-            Nothing ->
-              respond $ responseLBS status302 [("Location", "/garaje")] ""
-        _ ->
-          respond $ responseLBS status302 [("Location", "/login")] ""
+            Just v -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")]
+                        (renderBS (formVehiculo ("/garaje/" ++ show vid ++ "/actualizar") (Just v)))
+            Nothing -> respond $ responseLBS status302 [("Location", "/garaje")] ""
+        _ -> respond $ responseLBS status302 [("Location", "/login")] ""
 
-    -----------------------------------------
-    -- 💾 ACTUALIZAR VEHÍCULO
-    -----------------------------------------
     ("POST", p) | "/garaje/" `BS.isPrefixOf` p && "/actualizar" `BS.isSuffixOf` p ->
       case (currentUser, takeIdAfter "/garaje/" p) of
         (Just u, Just vid) -> do
           (params, _) <- parseRequestBody lbsBackEnd req
-          let lookupField key = maybe "" BS.unpack (lookup key params)
-          modifyMVar_ vehiculosDB $ \vs -> do
-            let actualizar v = v
-                  { tipo        = lookupField "tipo"
-                  , marca       = lookupField "marca"
-                  , modelo      = lookupField "modelo"
-                  , anio        = readDef 2025 (lookupField "anio")
-                  , color       = lookupField "color"
-                  , kilometros  = readDef 0 (lookupField "km")
-                  , notas       = lookupField "notas"
-                  }
-            return (map (\v -> if vehiculoId v == vid && vehiculoOwnerId v == userId u
-                               then actualizar v else v) vs)
+          let lookupField k = maybe "" BS.unpack (lookup k params)
+          vs <- loadVehiculos conn
+          let actualizar v = v
+                { tipo        = lookupField "tipo"
+                , marca       = lookupField "marca"
+                , modelo      = lookupField "modelo"
+                , anio        = readDef 2025 (lookupField "anio")
+                , color       = lookupField "color"
+                , kilometros  = readDef 0 (lookupField "km")
+                , notas       = lookupField "notas"
+                }
+          saveVehiculos conn (map (\v -> if vehiculoId v == vid && vehiculoOwnerId v == userId u then actualizar v else v) vs)
           respond $ responseLBS status302 [("Location", "/garaje")] ""
         _ -> respond $ responseLBS status302 [("Location", "/login")] ""
 
-    -----------------------------------------
-    -- 🗑️ BORRAR VEHÍCULO
-    -----------------------------------------
     ("GET", p) | "/garaje/borrar/" `BS.isPrefixOf` p ->
       case (currentUser, takeIdAfter "/garaje/borrar/" p) of
         (Just u, Just vid) -> do
-          modifyMVar_ vehiculosDB (return . filter (\v -> vehiculoId v /= vid || vehiculoOwnerId v /= userId u))
+          vs <- loadVehiculos conn
+          saveVehiculos conn (filter (\v -> vehiculoId v /= vid || vehiculoOwnerId v /= userId u) vs)
           respond $ responseLBS status302 [("Location", "/garaje")] ""
         _ -> respond $ responseLBS status302 [("Location", "/login")] ""
 
-    -----------------------------------------
-    -- 👁️ VER VEHÍCULO
-    -----------------------------------------
     ("GET", p) | "/garaje/" `BS.isPrefixOf` p ->
       case takeIdAfter "/garaje/" p of
         Just vid ->
@@ -289,17 +290,12 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
     -----------------------------------------
     _ -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] "Ruta no válida"
 
-
 --------------------------------------------------------
--- 🔧 Helpers
+-- 🧱 Helper para insertar usuarios nuevos
 --------------------------------------------------------
-takeIdAfter :: String -> BS.ByteString -> Maybe Int
-takeIdAfter prefix p =
-  let rest = drop (length prefix) (BS.unpack p)
-      digits = takeWhile isDigit rest
-  in if null digits then Nothing else readMaybe digits
 
-readDef :: Read a => a -> String -> a
-readDef def s = case reads s of
-  [(x, "")] -> x
-  _ -> def
+executeInsertUser :: Connection -> String -> String -> String -> IO ()
+executeInsertUser conn n e p = do
+  us <- loadUsuarios conn
+  let nuevo = Usuario (length us + 1) n e p User
+  saveUsuarios conn (us ++ [nuevo])
