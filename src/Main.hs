@@ -39,9 +39,12 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
     -----------------------------------------
     ("GET", "/") -> do
       let header = case currentUser of
-            Just u -> "<p>Bienvenido, <b>" <> nombre u <> "</b> 👋 — \
-                      \<a href='/logout' style='color:lightgreen'>Cerrar sesión</a></p>"
-            Nothing -> "<p><a href='/login'>Iniciar sesión</a> | <a href='/registro'>Crear cuenta</a></p>"
+            Just u ->
+              "<p>Bienvenido, <b>" <> nombre u <> "</b> 👋 — " <>
+              (if rol u == Admin then "<a href='/admin' style='color:gold'>🛠️ Panel de administración</a> | " else "") <>
+              "<a href='/logout' style='color:lightgreen'>Cerrar sesión</a></p>"
+            Nothing ->
+              "<p><a href='/login'>Iniciar sesión</a> | <a href='/registro'>Crear cuenta</a></p>"
       respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
         BL.pack $ "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>Inicio</title>\
         \<style>body{background:#111;color:white;font-family:sans-serif;}a{color:lightgreen;}</style>\
@@ -87,7 +90,6 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
             \</p>\
             \</body></html>"
 
-
     -----------------------------------------
     -- 🔒 LOGOUT
     -----------------------------------------
@@ -120,7 +122,67 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
       respond $ responseLBS status302 [("Location", "/login")] ""
 
     -----------------------------------------
-    -- 🚗 GARAGE (protección)
+    -- 👑 PANEL DE ADMINISTRACIÓN
+    -----------------------------------------
+    ("GET", "/admin") ->
+      case currentUser of
+        Just u | rol u == Admin -> do
+          respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (paginaAdmin usuarios))
+        _ -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] $
+          "<html><body><h1>🚫 Acceso denegado</h1><p>Solo el administrador puede ver esta página.</p><a href='/'>Volver al inicio</a></body></html>"
+
+    ("GET", "/admin/nuevo") ->
+      case currentUser of
+        Just u | rol u == Admin ->
+          respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (formUsuario "/admin/nuevo" Nothing))
+        _ -> respond $ responseLBS status302 [("Location", "/")] ""
+
+    ("POST", "/admin/nuevo") ->
+      case currentUser of
+        Just u | rol u == Admin -> do
+          (params, _) <- parseRequestBody lbsBackEnd req
+          let lookupField key = maybe "" BS.unpack (lookup key params)
+              rolStr = lookupField "rol"
+              nuevoRol = if rolStr == "Admin" then Admin else User
+              nuevo = Usuario (length usuarios + 1) (lookupField "nombre") (lookupField "email") (lookupField "password") nuevoRol
+          modifyMVar_ usuariosDB (return . (++ [nuevo]))
+          respond $ responseLBS status302 [("Location", "/admin")] ""
+        _ -> respond $ responseLBS status302 [("Location", "/")] ""
+
+    ("GET", p) | "/admin/editar/" `BS.isPrefixOf` p ->
+      case (currentUser, takeIdAfter "/admin/editar/" p) of
+        (Just u, Just uid) | rol u == Admin ->
+          case find ((== uid) . userId) usuarios of
+            Just usr -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (formUsuario ("/admin/actualizar/" ++ show uid) (Just usr)))
+            Nothing -> respond $ responseLBS status302 [("Location", "/admin")] ""
+        _ -> respond $ responseLBS status302 [("Location", "/")] ""
+
+    ("POST", p) | "/admin/actualizar/" `BS.isPrefixOf` p ->
+      case (currentUser, takeIdAfter "/admin/actualizar/" p) of
+        (Just u, Just uid) | rol u == Admin -> do
+          (params, _) <- parseRequestBody lbsBackEnd req
+          let lookupField key = maybe "" BS.unpack (lookup key params)
+              rolStr = lookupField "rol"
+              nuevoRol = if rolStr == "Admin" then Admin else User
+          modifyMVar_ usuariosDB $ \us ->
+            return (map (\usr -> if userId usr == uid
+                                 then usr { nombre = lookupField "nombre"
+                                          , email = lookupField "email"
+                                          , password = lookupField "password"
+                                          , rol = nuevoRol }
+                                 else usr) us)
+          respond $ responseLBS status302 [("Location", "/admin")] ""
+        _ -> respond $ responseLBS status302 [("Location", "/")] ""
+
+    ("GET", p) | "/admin/borrar/" `BS.isPrefixOf` p ->
+      case (currentUser, takeIdAfter "/admin/borrar/" p) of
+        (Just u, Just uid) | rol u == Admin -> do
+          modifyMVar_ usuariosDB (return . filter ((/= uid) . userId))
+          respond $ responseLBS status302 [("Location", "/admin")] ""
+        _ -> respond $ responseLBS status302 [("Location", "/")] ""
+
+    -----------------------------------------
+    -- 🚗 GARAGE (protegido)
     -----------------------------------------
     ("GET", "/garaje") ->
       case currentUser of
@@ -231,7 +293,6 @@ app vehiculosDB usuariosDB usuarioActual req respond = do
 --------------------------------------------------------
 -- 🔧 Helpers
 --------------------------------------------------------
-
 takeIdAfter :: String -> BS.ByteString -> Maybe Int
 takeIdAfter prefix p =
   let rest = drop (length prefix) (BS.unpack p)
