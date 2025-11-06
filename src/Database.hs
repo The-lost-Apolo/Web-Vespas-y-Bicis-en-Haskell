@@ -6,6 +6,10 @@ module Database
   , loadUsuarios
   , saveVehiculos
   , saveUsuarios
+  , loadRutas
+  , saveRuta
+  , loadParadas
+  , saveParada
   ) where
 
 import Database.SQLite.Simple
@@ -23,12 +27,15 @@ initDatabase :: IO Connection
 initDatabase = do
   conn <- open "garage.db"
 
+  -- 👤 Tabla de usuarios
   execute_ conn "CREATE TABLE IF NOT EXISTS usuarios (\
                 \id INTEGER PRIMARY KEY AUTOINCREMENT,\
                 \nombre TEXT,\
                 \email TEXT UNIQUE,\
                 \password TEXT,\
                 \rol TEXT)"
+
+  -- 🚗 Tabla de vehículos
   execute_ conn "CREATE TABLE IF NOT EXISTS vehiculos (\
                 \id INTEGER PRIMARY KEY AUTOINCREMENT,\
                 \ownerId INTEGER,\
@@ -42,6 +49,27 @@ initDatabase = do
                 \itvFecha TEXT,\
                 \foto TEXT,\
                 \notas TEXT)"
+
+  -- 🗺️ Tabla de rutas
+  execute_ conn "CREATE TABLE IF NOT EXISTS rutas (\
+                \id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                \userId INTEGER,\
+                \fecha TEXT,\
+                \distancia REAL,\
+                \duracion REAL,\
+                \velocidadMedia REAL)"
+
+  -- 📍 Tabla de paradas
+  execute_ conn "CREATE TABLE IF NOT EXISTS paradas (\
+                \id INTEGER PRIMARY KEY AUTOINCREMENT,\
+                \rutaId INTEGER,\
+                \latitud REAL,\
+                \longitud REAL,\
+                \descripcion TEXT,\
+                \foto TEXT,\
+                \video TEXT)"
+
+  putStrLn "📦 Tablas listas."
 
   -- Crear admin por defecto si no existe
   rows <- query_ conn "SELECT id FROM usuarios WHERE email='admin@example.com'" :: IO [Only Int]
@@ -100,7 +128,7 @@ instance ToRow Vehiculo where
     ]
 
 ------------------------------------------------------------
--- 🧩 Cargar todos los usuarios desde SQLite
+-- 👥 Usuarios
 ------------------------------------------------------------
 loadUsuarios :: Connection -> IO [Usuario]
 loadUsuarios conn = do
@@ -109,16 +137,6 @@ loadUsuarios conn = do
     :: IO [(Int,String,String,String,String)]
   return [Usuario i n e p (if r == "Admin" then Admin else User) | (i,n,e,p,r) <- rows]
 
-------------------------------------------------------------
--- 🧩 Cargar todos los vehículos desde SQLite
-------------------------------------------------------------
-loadVehiculos :: Connection -> IO [Vehiculo]
-loadVehiculos conn = query_ conn
-  "SELECT id,ownerId,tipo,marca,modelo,anio,color,kilometros,ultimaRevision,itvFecha,foto,notas FROM vehiculos"
-
-------------------------------------------------------------
--- 🧩 Guardar lista de usuarios en la base
-------------------------------------------------------------
 saveUsuarios :: Connection -> [Usuario] -> IO ()
 saveUsuarios conn usuarios = do
   execute_ conn "DELETE FROM usuarios"
@@ -127,11 +145,66 @@ saveUsuarios conn usuarios = do
     (userId u, nombre u, email u, password u, show (rol u))) usuarios
 
 ------------------------------------------------------------
--- 🧩 Guardar lista de vehículos en la base
+-- 🚗 Vehículos
 ------------------------------------------------------------
+loadVehiculos :: Connection -> IO [Vehiculo]
+loadVehiculos conn = query_ conn
+  "SELECT id,ownerId,tipo,marca,modelo,anio,color,kilometros,ultimaRevision,itvFecha,foto,notas FROM vehiculos"
+
 saveVehiculos :: Connection -> [Vehiculo] -> IO ()
 saveVehiculos conn vehiculos = do
   execute_ conn "DELETE FROM vehiculos"
   mapM_ (\v -> execute conn
     "INSERT INTO vehiculos (id,ownerId,tipo,marca,modelo,anio,color,kilometros,ultimaRevision,itvFecha,foto,notas)\
     \VALUES (?,?,?,?,?,?,?,?,?,?,?,?)" v) vehiculos
+
+------------------------------------------------------------
+-- 🗺️ Rutas
+------------------------------------------------------------
+instance FromRow Ruta where
+  fromRow = Ruta <$> field <*> field <*> field <*> field <*> field <*> field
+
+instance ToRow Ruta where
+  toRow r =
+    [ toField (rutaId r)
+    , toField (rutaUserId r)
+    , toField (rutaFecha r)
+    , toField (rutaDistancia r)
+    , toField (rutaDuracion r)
+    , toField (rutaVelMedia r)
+    ]
+
+loadRutas :: Connection -> IO [Ruta]
+loadRutas conn = query_ conn
+  "SELECT id,userId,fecha,distancia,duracion,velocidadMedia FROM rutas"
+
+saveRuta :: Connection -> Ruta -> IO ()
+saveRuta conn r = execute conn
+  "INSERT INTO rutas (userId,fecha,distancia,duracion,velocidadMedia) VALUES (?,?,?,?,?)"
+  (rutaUserId r, rutaFecha r, rutaDistancia r, rutaDuracion r, rutaVelMedia r)
+
+------------------------------------------------------------
+-- 📍 Paradas
+------------------------------------------------------------
+instance FromRow Parada where
+  fromRow = Parada <$> field <*> field <*> field <*> field <*> field <*> field <*> field
+
+instance ToRow Parada where
+  toRow p =
+    [ toField (paradaId p)
+    , toField (paradaRutaId p)
+    , toField (paradaLat p)
+    , toField (paradaLong p)
+    , toField (paradaDesc p)
+    , toField (paradaFoto p)
+    , toField (paradaVideo p)
+    ]
+
+loadParadas :: Connection -> Int -> IO [Parada]
+loadParadas conn rutaId = query conn
+  "SELECT id,rutaId,latitud,longitud,descripcion,foto,video FROM paradas WHERE rutaId = ?" (Only rutaId)
+
+saveParada :: Connection -> Parada -> IO ()
+saveParada conn p = execute conn
+  "INSERT INTO paradas (rutaId,latitud,longitud,descripcion,foto,video) VALUES (?,?,?,?,?,?)"
+  (paradaRutaId p, paradaLat p, paradaLong p, paradaDesc p, paradaFoto p, paradaVideo p)

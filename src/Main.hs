@@ -75,7 +75,7 @@ app conn usuarioActual req respond = do
         \<style>body{background:#111;color:white;font-family:sans-serif;}a{color:lightgreen;}</style>\
         \</head><body><h1>🚗 Bienvenido a Mi Garaje Vespa</h1>" <>
         header <>
-        "<a href='/garaje'>Entrar al garaje</a></body></html>"
+        "<a href='/garaje'>Entrar al garaje</a> | <a href='/rutas'>Rutas</a>"
 
     -----------------------------------------
     -- 🔐 LOGIN
@@ -284,6 +284,21 @@ app conn usuarioActual req respond = do
             Just v  -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (paginaVehiculo v))
             Nothing -> respond $ responseLBS status302 [("Location", "/garaje")] ""
         Nothing -> respond $ responseLBS status302 [("Location", "/garaje")] ""
+
+    -----------------------------------------
+    -- 🗺️ RUTAS
+    -----------------------------------------
+    ("GET", "/rutas") ->
+      respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS paginaRutas)
+
+    ("GET", "/rutas/iniciar") ->
+      respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS paginaIniciarRuta)
+
+    ("GET", "/rutas/historial") -> do
+      rutas <- loadRutas conn
+      respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (paginaHistorial rutas))
+
+
 
     -----------------------------------------
     -- ❌ RUTA INVÁLIDA

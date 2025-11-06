@@ -165,6 +165,119 @@ formUsuario actionPath maybeU = html_ $ do
       p_ $ input_ [type_ "submit", value_ "Guardar"]
       p_ $ a_ [href_ "/admin"] "⬅️ Volver al panel"
 
+
+-- Pagina Rutas
+paginaRutas :: Html ()
+paginaRutas = html_ $ do
+  head_ $ do
+    meta_ [charset_ "UTF-8"]
+    title_ "Rutas"
+    style_ "body { background:#111; color:white; font-family:sans-serif; text-align:center; } a{color:lightgreen; margin:10px;}"
+  body_ $ do
+    h1_ "🗺️ Rutas"
+    a_ [href_ "/"] "🏠 Inicio"
+    a_ [href_ "/rutas/iniciar"] "▶️ Iniciar nueva ruta"
+    a_ [href_ "/rutas/historial"] "📜 Ver historial"
+
+
+-- 🗺️ Página Iniciar Rutas (con simulador GPS automático)
+paginaIniciarRuta :: Html ()
+paginaIniciarRuta = html_ $ do
+  head_ $ do
+    meta_ [charset_ "UTF-8"]
+    title_ "Iniciar ruta"
+    link_ [rel_ "stylesheet", href_ "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"]
+    script_ [src_ "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"] ("" :: String)
+    style_ "body {background:#111;color:white;font-family:sans-serif;text-align:center;}#map{height:400px;margin:20px;}"
+  body_ $ do
+    h1_ "📍 Iniciando ruta..."
+    div_ [id_ "map"] mempty
+    p_ [id_ "stats"] "Distancia: 0 m | Velocidad: 0 km/h | Tiempo: 0 s"
+    button_ [id_ "stopBtn"] "⏹️ Terminar ruta"
+    button_ [id_ "pauseBtn"] "⏸️ Pausar"
+    script_ (mconcat
+      [ "let map = L.map('map').setView([0,0], 13);\n"
+      , "L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19}).addTo(map);\n"
+      , "let track = L.polyline([], {color:'lime'}).addTo(map);\n"
+      , "let startTime = Date.now(); let totalDist = 0; let lastPos = null;\n"
+      , "navigator.geolocation.watchPosition(pos => {\n"
+      , "  let lat = pos.coords.latitude, lon = pos.coords.longitude;\n"
+      , "  if (!lastPos) { map.setView([lat,lon],15); } else {\n"
+      , "    let d = map.distance([lat,lon], [lastPos.lat,lastPos.lon]); totalDist += d;\n"
+      , "  }\n"
+      , "  lastPos = {lat, lon};\n"
+      , "  track.addLatLng([lat, lon]);\n"
+      , "  let t = (Date.now()-startTime)/1000;\n"
+      , "  let v = pos.coords.speed ? (pos.coords.speed*3.6).toFixed(1) : 0;\n"
+      , "  document.getElementById('stats').innerText = `Distancia: ${totalDist.toFixed(1)} m | Velocidad: ${v} km/h | Tiempo: ${t.toFixed(1)} s`;\n"
+      , "});\n"
+
+      -- 🔧 SIMULADOR GPS (activación automática tras 5s)
+      , "setTimeout(() => {\n"
+      , "  if (!navigator.geolocation) { console.warn('❌ No hay geolocalización disponible'); return; }\n"
+      , "  let gpsTimeout = setTimeout(() => {\n"
+      , "    console.warn('⚙️ Activando simulación GPS...');\n"
+      , "    window.geoSim = { callbacks: [] };\n"
+      , "    navigator.geolocation.watchPosition = function (cb) {\n"
+      , "      window.geoSim.callbacks.push(cb);\n"
+      , "      console.log('📡 Simulación GPS activada (callback registrada)');\n"
+      , "    };\n"
+      , "    let i = 0;\n"
+      , "    const path = [[40.4168,-3.7038],[40.4175,-3.7032],[40.4181,-3.7026],[40.4188,-3.7020],[40.4195,-3.7014]];\n"
+      , "    setInterval(() => {\n"
+      , "      const pos = { coords: {\n"
+      , "        latitude: path[i % path.length][0],\n"
+      , "        longitude: path[i % path.length][1],\n"
+      , "        speed: 5\n"
+      , "      }};\n"
+      , "      if (window.geoSim.callbacks.length > 0) {\n"
+      , "        window.geoSim.callbacks.forEach(cb => cb(pos));\n"
+      , "      }\n"
+      , "      i++;\n"
+      , "    }, 2000);\n"
+      , "  }, 5000);\n"
+      , "  navigator.geolocation.watchPosition(p => {\n"
+      , "    clearTimeout(gpsTimeout);\n"
+      , "    console.log('✅ GPS real detectado');\n"
+      , "  }, err => console.warn('⚠️ Error de geolocalización:', err));\n"
+      , "}, 1000);\n"
+      ])
+<
+
+
+-- 📜 Historial de rutas
+paginaHistorial :: [Ruta] -> Html ()
+paginaHistorial rutas = html_ $ do
+  head_ $ do
+    meta_ [charset_ "UTF-8"]
+    title_ "Historial de rutas"
+    style_
+      "body { background:#111; color:white; font-family:sans-serif; text-align:center; }\
+      \a{color:lightgreen;margin:8px;}\
+      \table {margin:auto; border-collapse:collapse; margin-top:20px;}\
+      \th, td {border:1px solid #333; padding:6px 12px;}"
+  body_ $ do
+    h1_ "📜 Historial de rutas"
+    a_ [href_ "/rutas"] "⬅️ Volver a Rutas"
+    table_ $ do
+      tr_ $ do
+        th_ "ID"
+        th_ "Fecha"
+        th_ "Distancia (m)"
+        th_ "Duración (s)"
+        th_ "Velocidad media (km/h)"
+      mapM_ renderRuta rutas
+
+renderRuta :: Ruta -> Html ()
+renderRuta r = tr_ $ do
+  td_ (toHtml (show (rutaId r)))
+  td_ (toHtml (rutaFecha r))
+  td_ (toHtml (show (rutaDistancia r)))
+  td_ (toHtml (show (rutaDuracion r)))
+  td_ (toHtml (show (rutaVelMedia r)))
+
+
+
 -- Cubo 3D de prueba
 escena3D :: String
 escena3D = unlines
