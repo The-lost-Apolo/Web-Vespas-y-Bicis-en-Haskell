@@ -242,7 +242,6 @@ paginaIniciarRuta = html_ $ do
       , "  }, err => console.warn('⚠️ Error de geolocalización:', err));\n"
       , "}, 1000);\n"
       ])
-<
 
 
 -- 📜 Historial de rutas
