@@ -179,7 +179,7 @@ paginaRutas = html_ $ do
     a_ [href_ "/rutas/iniciar"] "▶️ Iniciar nueva ruta"
     a_ [href_ "/rutas/historial"] "📜 Ver historial"
 
-
+--Iniciar Ruta
 paginaIniciarRuta :: Html ()
 paginaIniciarRuta = html_ $ do
   head_ $ do
@@ -198,14 +198,14 @@ paginaIniciarRuta = html_ $ do
     p_ [id_ "stats"] "Distancia: 0 m | Velocidad: 0 km/h | Tiempo: 0 s"
     button_ [id_ "stopBtn"] "⏹️ Terminar ruta"
     button_ [id_ "pauseBtn"] "⏸️ Pausar"
+    button_ [id_ "backBtn"] "⬅️ Volver a Rutas"
 
     script_ $ mconcat
       [
-
       ------------------------------------------------------------------------------
       -- MAPA Y VARIABLES
       ------------------------------------------------------------------------------
-      "let map = L.map('map').setView([0,0], 13);\n"
+        "let map = L.map('map').setView([0,0], 13);\n"
       , "L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);\n"
       , "let track = L.polyline([], {color:'lime'}).addTo(map);\n"
 
@@ -214,16 +214,18 @@ paginaIniciarRuta = html_ $ do
       , "let lastTime = null;\n"
       , "let startTime = Date.now();\n"
       , "let gotRealGPS = false;\n"
+      , "let paused = false;\n"
+      , "let pauseStart = null;\n"
 
       ------------------------------------------------------------------------------
       -- FUNCIÓN PRINCIPAL: CALCULA DISTANCIA, VELOCIDAD, TIEMPO
       ------------------------------------------------------------------------------
       , "function updatePos(pos) {\n"
+      , "  if (paused) return;\n"
       , "  let now = Date.now();\n"
       , "  let lat = pos.coords.latitude;\n"
       , "  let lon = pos.coords.longitude;\n"
 
-      -- PRIMER PUNTO
       , "  if (!lastPos) {\n"
       , "    lastPos = {lat, lon};\n"
       , "    lastTime = now;\n"
@@ -232,84 +234,109 @@ paginaIniciarRuta = html_ $ do
       , "    return;\n"
       , "  }\n"
 
-      -- DISTANCIA ENTRE ÚLTIMO PUNTO Y EL ACTUAL
       , "  let d = map.distance([lat,lon], [lastPos.lat,lastPos.lon]);\n"
-
-      -- TIEMPO ENTRE MEDICIONES
       , "  let dt = (now - lastTime) / 1000;\n"
 
-      -- SUMA DISTANCIA SOLO SI ES REAL (> 0.5m)
       , "  if (d > 0.5) {\n"
       , "    totalDist += d;\n"
       , "    track.addLatLng([lat, lon]);\n"
       , "  }\n"
 
-      -- VELOCIDAD REAL
       , "  let v = dt > 0 ? (d / dt) * 3.6 : 0;\n"
-
-      -- ACTUALIZAR ESTADO
       , "  lastPos = {lat, lon};\n"
       , "  lastTime = now;\n"
 
-      -- ACTUALIZAR UI
       , "  let totalTime = (now - startTime) / 1000;\n"
       , "  document.getElementById('stats').innerText =\n"
       , "    `Distancia: ${totalDist.toFixed(1)} m | Velocidad: ${v.toFixed(1)} km/h | Tiempo: ${totalTime.toFixed(1)} s`;\n"
       , "}\n"
 
       ------------------------------------------------------------------------------
-      -- GPS REAL
+      -- BOTÓN PAUSAR / REANUDAR
+      ------------------------------------------------------------------------------
+      , "document.getElementById('pauseBtn').onclick = function() {\n"
+      , "  if (!paused) {\n"
+      , "    paused = true;\n"
+      , "    pauseStart = Date.now();\n"
+      , "    this.innerText = '▶️ Reanudar';\n"
+      , "  } else {\n"
+      , "    paused = false;\n"
+      , "    if (pauseStart !== null) {\n"
+      , "      const pausedDuration = Date.now() - pauseStart;\n"
+      , "      startTime += pausedDuration;\n"
+      , "      if (lastTime !== null) { lastTime += pausedDuration; }\n"
+      , "    }\n"
+      , "    pauseStart = null;\n"
+      , "    this.innerText = '⏸️ Pausar';\n"
+      , "  }\n"
+      , "};\n"
+
+      ------------------------------------------------------------------------------
+      -- BOTÓN VOLVER
+      ------------------------------------------------------------------------------
+      , "document.getElementById('backBtn').onclick = () => { window.location.href = '/rutas'; };\n"
+
+      ------------------------------------------------------------------------------
+      -- TERMINAR RUTA (ENVIAR JSON)
+      ------------------------------------------------------------------------------
+      , "document.getElementById('stopBtn').onclick = async function () {\n"
+      , "  paused = true;\n"
+      , "  let endTime = Date.now();\n"
+      , "  let duration = (endTime - startTime) / 1000;\n"
+      , "  let avgSpeed = duration > 0 ? (totalDist / duration) * 3.6 : 0;\n"
+
+      , "  const payload = {\n"
+      , "    distancia: totalDist,\n"
+      , "    duracion: duration,\n"
+      , "    velocidad: avgSpeed,\n"
+      , "    puntos: track.getLatLngs().map(p => [p.lat, p.lng]),\n"
+      , "    paradas: []\n"
+      , "  };\n"
+
+      , "  const resp = await fetch('/rutas/terminar', {\n"
+      , "    method: 'POST',\n"
+      , "    headers: {'Content-Type': 'application/json'},\n"
+      , "    body: JSON.stringify(payload)\n"
+      , "  });\n"
+
+      , "  if (resp.ok) {\n"
+      , "    alert('Ruta guardada con éxito');\n"
+      , "    window.location.href = '/rutas/historial';\n"
+      , "  } else {\n"
+      , "    alert('❌ Error guardando ruta');\n"
+      , "  }\n"
+      , "};\n"
+
+      ------------------------------------------------------------------------------
+      -- GPS REAL + SIMULADOR
       ------------------------------------------------------------------------------
       , "navigator.geolocation.watchPosition(p => {\n"
       , "  gotRealGPS = true;\n"
       , "  updatePos(p);\n"
       , "}, err => console.warn('⚠️ Error GPS real:', err));\n"
 
-      ------------------------------------------------------------------------------
-      -- SIMULADOR DESPUÉS DE 5s (SI NO HAY GPS REAL)
-      ------------------------------------------------------------------------------
       , "setTimeout(() => {\n"
-      , "  if (gotRealGPS) {\n"
-      , "    console.log('🛰️ GPS real detectado, sin simulación'); return;\n"
-      , "  }\n"
+      , "  if (gotRealGPS) return;\n"
 
-      , "  console.warn('⚙️ Activando simulador GPS recto...');\n"
-
-      -- REEMPLAZAMOS WATCHPOSITION PARA REGISTRAR CALLBACKS
       , "  window.geoSim = { callbacks: [updatePos] };\n"
       , "  navigator.geolocation.watchPosition = function(cb) {\n"
       , "    window.geoSim.callbacks.push(cb);\n"
-      , "    console.log('📡 Simulación: callback registrada');\n"
       , "  };\n"
 
-      ------------------------------------------------------------------------------
-      -- 🔥 RUTA RECTILÍNEA HACIA EL NORTE (≈5.5m POR PUNTO)
-      ------------------------------------------------------------------------------
       , "  let path = [];\n"
       , "  let lat = 40.416800;\n"
       , "  let lon = -3.703800;\n"
+      , "  for (let j = 0; j < 500; j++) { lat += 0.00005; path.push([lat, lon]); }\n"
 
-      , "  for (let j = 0; j < 500; j++) {\n"
-      , "    lat += 0.00005;   // ≈5.5 metros hacia el norte\n"
-      , "    path.push([lat, lon]);\n"
-      , "  }\n"
-
-      -- EJECUCIÓN SIMULADA
       , "  let idx = 0;\n"
       , "  setInterval(() => {\n"
-      , "    const pos = { coords: {\n"
-      , "      latitude: path[idx][0],\n"
-      , "      longitude: path[idx][1],\n"
-      , "      speed: null\n"
-      , "    }};\n"
-
+      , "    if (paused) return;\n"
+      , "    const pos = { coords: { latitude: path[idx][0], longitude: path[idx][1], speed: null }};\n"
       , "    window.geoSim.callbacks.forEach(cb => cb(pos));\n"
       , "    idx = (idx + 1) % path.length;\n"
       , "  }, 2000);\n"
-
       , "}, 5000);\n"
       ]
-
 
 -- 📜 Historial de rutas
 paginaHistorial :: [Ruta] -> Html ()
