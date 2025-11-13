@@ -1,24 +1,40 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 import Network.Wai
 import Network.Wai.Handler.Warp (run)
-import Network.HTTP.Types (status200, status302)
+import Network.HTTP.Types (status200, status302, status400)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as BL
 import Network.Wai.Parse (parseRequestBody, lbsBackEnd)
 import Data.List (find)
-import Data.Time (fromGregorian)
 import Lucid (renderBS)
 import Text.Read (readMaybe)
 import Data.Char (isDigit)
 import Control.Concurrent.MVar
 import Control.Monad (void)
 import Database.SQLite.Simple (Connection)
+import Data.Time.Clock (getCurrentTime)
+import Data.Time (fromGregorian, utctDay)
 
-import Pages
+
+import Pages (paginaAdmin, paginaLista, paginaVehiculo, formVehiculo,
+              paginaRutas, paginaIniciarRuta, paginaHistorial, formUsuario)
 import Models
 import Users
 import Database
+
+
+import GHC.Generics (Generic)
+import Data.Aeson (decode, FromJSON)
+
+data RutaPayload = RutaPayload
+  { distancia :: Double
+  , duracion  :: Double
+  , velocidad :: Double
+  } deriving (Show, Generic)
+
+instance FromJSON RutaPayload
 
 --------------------------------------------------------
 -- 🔧 Helpers
@@ -284,6 +300,28 @@ app conn usuarioActual req respond = do
             Just v  -> respond $ responseLBS status200 [("Content-Type", "text/html; charset=utf-8")] (renderBS (paginaVehiculo v))
             Nothing -> respond $ responseLBS status302 [("Location", "/garaje")] ""
         Nothing -> respond $ responseLBS status302 [("Location", "/garaje")] ""
+
+    ("POST", "/rutas/terminar") -> do
+      body <- strictRequestBody req
+      case decode body :: Maybe RutaPayload of
+        Nothing ->
+          respond $ responseLBS status400 [("Content-Type","text/plain; charset=utf-8")] "JSON inválido"
+        Just rp ->
+          case currentUser of
+            Nothing -> respond $ responseLBS status302 [("Location","/login")] ""
+            Just u  -> do
+              now <- getCurrentTime
+              let fechaStr = show (utctDay now)
+                  nueva = Ruta
+                    { rutaId        = 0
+                    , rutaUserId    = userId u
+                    , rutaFecha     = fechaStr
+                    , rutaDistancia = distancia rp
+                    , rutaDuracion  = duracion rp
+                    , rutaVelMedia  = velocidad rp
+                    }
+              _ <- saveRutaGetId conn nueva
+              respond $ responseLBS status200 [("Content-Type","text/plain; charset=utf-8")] "OK"
 
     -----------------------------------------
     -- 🗺️ RUTAS
