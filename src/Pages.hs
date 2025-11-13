@@ -180,68 +180,135 @@ paginaRutas = html_ $ do
     a_ [href_ "/rutas/historial"] "📜 Ver historial"
 
 
--- 🗺️ Página Iniciar Rutas (con simulador GPS automático)
 paginaIniciarRuta :: Html ()
 paginaIniciarRuta = html_ $ do
   head_ $ do
     meta_ [charset_ "UTF-8"]
     title_ "Iniciar ruta"
-    link_ [rel_ "stylesheet", href_ "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"]
-    script_ [src_ "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"] ("" :: String)
-    style_ "body {background:#111;color:white;font-family:sans-serif;text-align:center;}#map{height:400px;margin:20px;}"
+    link_ [ rel_ "stylesheet"
+          , href_ "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"]
+    script_ [ src_ "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"] ("" :: String)
+    style_ "body{background:#111;color:white;font-family:sans-serif;text-align:center;}\
+           \#map{height:400px;margin:20px;}\
+           \button{margin:10px;padding:10px 15px;font-size:16px;border-radius:8px;}"
+
   body_ $ do
     h1_ "📍 Iniciando ruta..."
     div_ [id_ "map"] mempty
     p_ [id_ "stats"] "Distancia: 0 m | Velocidad: 0 km/h | Tiempo: 0 s"
     button_ [id_ "stopBtn"] "⏹️ Terminar ruta"
     button_ [id_ "pauseBtn"] "⏸️ Pausar"
-    script_ (mconcat
-      [ "let map = L.map('map').setView([0,0], 13);\n"
-      , "L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19}).addTo(map);\n"
-      , "let track = L.polyline([], {color:'lime'}).addTo(map);\n"
-      , "let startTime = Date.now(); let totalDist = 0; let lastPos = null;\n"
-      , "navigator.geolocation.watchPosition(pos => {\n"
-      , "  let lat = pos.coords.latitude, lon = pos.coords.longitude;\n"
-      , "  if (!lastPos) { map.setView([lat,lon],15); } else {\n"
-      , "    let d = map.distance([lat,lon], [lastPos.lat,lastPos.lon]); totalDist += d;\n"
-      , "  }\n"
-      , "  lastPos = {lat, lon};\n"
-      , "  track.addLatLng([lat, lon]);\n"
-      , "  let t = (Date.now()-startTime)/1000;\n"
-      , "  let v = pos.coords.speed ? (pos.coords.speed*3.6).toFixed(1) : 0;\n"
-      , "  document.getElementById('stats').innerText = `Distancia: ${totalDist.toFixed(1)} m | Velocidad: ${v} km/h | Tiempo: ${t.toFixed(1)} s`;\n"
-      , "});\n"
 
-      -- 🔧 SIMULADOR GPS (activación automática tras 5s)
+    script_ $ mconcat
+      [
+
+      ------------------------------------------------------------------------------
+      -- MAPA Y VARIABLES
+      ------------------------------------------------------------------------------
+      "let map = L.map('map').setView([0,0], 13);\n"
+      , "L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);\n"
+      , "let track = L.polyline([], {color:'lime'}).addTo(map);\n"
+
+      , "let totalDist = 0;\n"
+      , "let lastPos = null;\n"
+      , "let lastTime = null;\n"
+      , "let startTime = Date.now();\n"
+      , "let gotRealGPS = false;\n"
+
+      ------------------------------------------------------------------------------
+      -- FUNCIÓN PRINCIPAL: CALCULA DISTANCIA, VELOCIDAD, TIEMPO
+      ------------------------------------------------------------------------------
+      , "function updatePos(pos) {\n"
+      , "  let now = Date.now();\n"
+      , "  let lat = pos.coords.latitude;\n"
+      , "  let lon = pos.coords.longitude;\n"
+
+      -- PRIMER PUNTO
+      , "  if (!lastPos) {\n"
+      , "    lastPos = {lat, lon};\n"
+      , "    lastTime = now;\n"
+      , "    map.setView([lat,lon], 16);\n"
+      , "    track.addLatLng([lat,lon]);\n"
+      , "    return;\n"
+      , "  }\n"
+
+      -- DISTANCIA ENTRE ÚLTIMO PUNTO Y EL ACTUAL
+      , "  let d = map.distance([lat,lon], [lastPos.lat,lastPos.lon]);\n"
+
+      -- TIEMPO ENTRE MEDICIONES
+      , "  let dt = (now - lastTime) / 1000;\n"
+
+      -- SUMA DISTANCIA SOLO SI ES REAL (> 0.5m)
+      , "  if (d > 0.5) {\n"
+      , "    totalDist += d;\n"
+      , "    track.addLatLng([lat, lon]);\n"
+      , "  }\n"
+
+      -- VELOCIDAD REAL
+      , "  let v = dt > 0 ? (d / dt) * 3.6 : 0;\n"
+
+      -- ACTUALIZAR ESTADO
+      , "  lastPos = {lat, lon};\n"
+      , "  lastTime = now;\n"
+
+      -- ACTUALIZAR UI
+      , "  let totalTime = (now - startTime) / 1000;\n"
+      , "  document.getElementById('stats').innerText =\n"
+      , "    `Distancia: ${totalDist.toFixed(1)} m | Velocidad: ${v.toFixed(1)} km/h | Tiempo: ${totalTime.toFixed(1)} s`;\n"
+      , "}\n"
+
+      ------------------------------------------------------------------------------
+      -- GPS REAL
+      ------------------------------------------------------------------------------
+      , "navigator.geolocation.watchPosition(p => {\n"
+      , "  gotRealGPS = true;\n"
+      , "  updatePos(p);\n"
+      , "}, err => console.warn('⚠️ Error GPS real:', err));\n"
+
+      ------------------------------------------------------------------------------
+      -- SIMULADOR DESPUÉS DE 5s (SI NO HAY GPS REAL)
+      ------------------------------------------------------------------------------
       , "setTimeout(() => {\n"
-      , "  if (!navigator.geolocation) { console.warn('❌ No hay geolocalización disponible'); return; }\n"
-      , "  let gpsTimeout = setTimeout(() => {\n"
-      , "    console.warn('⚙️ Activando simulación GPS...');\n"
-      , "    window.geoSim = { callbacks: [] };\n"
-      , "    navigator.geolocation.watchPosition = function (cb) {\n"
-      , "      window.geoSim.callbacks.push(cb);\n"
-      , "      console.log('📡 Simulación GPS activada (callback registrada)');\n"
-      , "    };\n"
-      , "    let i = 0;\n"
-      , "    const path = [[40.4168,-3.7038],[40.4175,-3.7032],[40.4181,-3.7026],[40.4188,-3.7020],[40.4195,-3.7014]];\n"
-      , "    setInterval(() => {\n"
-      , "      const pos = { coords: {\n"
-      , "        latitude: path[i % path.length][0],\n"
-      , "        longitude: path[i % path.length][1],\n"
-      , "        speed: 5\n"
-      , "      }};\n"
-      , "      if (window.geoSim.callbacks.length > 0) {\n"
-      , "        window.geoSim.callbacks.forEach(cb => cb(pos));\n"
-      , "      }\n"
-      , "      i++;\n"
-      , "    }, 2000);\n"
-      , "  }, 5000);\n"
-      , "  navigator.geolocation.watchPosition(p => {\n"
-      , "    clearTimeout(gpsTimeout);\n"
-      , "    console.log('✅ GPS real detectado');\n"
-      , "  }, err => console.warn('⚠️ Error de geolocalización:', err));\n"
-      , "}, 1000);\n"
-      ])
+      , "  if (gotRealGPS) {\n"
+      , "    console.log('🛰️ GPS real detectado, sin simulación'); return;\n"
+      , "  }\n"
+
+      , "  console.warn('⚙️ Activando simulador GPS recto...');\n"
+
+      -- REEMPLAZAMOS WATCHPOSITION PARA REGISTRAR CALLBACKS
+      , "  window.geoSim = { callbacks: [updatePos] };\n"
+      , "  navigator.geolocation.watchPosition = function(cb) {\n"
+      , "    window.geoSim.callbacks.push(cb);\n"
+      , "    console.log('📡 Simulación: callback registrada');\n"
+      , "  };\n"
+
+      ------------------------------------------------------------------------------
+      -- 🔥 RUTA RECTILÍNEA HACIA EL NORTE (≈5.5m POR PUNTO)
+      ------------------------------------------------------------------------------
+      , "  let path = [];\n"
+      , "  let lat = 40.416800;\n"
+      , "  let lon = -3.703800;\n"
+
+      , "  for (let j = 0; j < 500; j++) {\n"
+      , "    lat += 0.00005;   // ≈5.5 metros hacia el norte\n"
+      , "    path.push([lat, lon]);\n"
+      , "  }\n"
+
+      -- EJECUCIÓN SIMULADA
+      , "  let idx = 0;\n"
+      , "  setInterval(() => {\n"
+      , "    const pos = { coords: {\n"
+      , "      latitude: path[idx][0],\n"
+      , "      longitude: path[idx][1],\n"
+      , "      speed: null\n"
+      , "    }};\n"
+
+      , "    window.geoSim.callbacks.forEach(cb => cb(pos));\n"
+      , "    idx = (idx + 1) % path.length;\n"
+      , "  }, 2000);\n"
+
+      , "}, 5000);\n"
+      ]
 
 
 -- 📜 Historial de rutas
